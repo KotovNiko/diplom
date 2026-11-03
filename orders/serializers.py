@@ -1,7 +1,7 @@
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .models import User
+from .models import ProductInfo, User
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -38,3 +38,23 @@ class ConfirmEmailSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
+
+
+class ProductInfoSerializer(serializers.ModelSerializer):
+    """Товар в магазине в том виде, в котором его видит покупатель."""
+    # source='product.name' берёт значение через связь: ProductInfo -> Product -> name
+    name = serializers.CharField(source='product.name', read_only=True)
+    description = serializers.CharField(source='product.description', read_only=True)
+    category = serializers.CharField(source='product.category.name', read_only=True)
+    shop = serializers.CharField(source='shop.name', read_only=True)
+    parameters = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductInfo
+        fields = ('id', 'name', 'description', 'category', 'shop', 'model',
+                  'price', 'price_rrc', 'quantity', 'parameters')
+
+    def get_parameters(self, obj):
+        # Характеристики в виде словаря {"Цвет": "чёрный", ...}.
+        # Данные уже подгружены через prefetch_related во view, запросов в базу тут нет
+        return {p.parameter.name: p.value for p in obj.parameters.all()}
