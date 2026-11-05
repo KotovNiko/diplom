@@ -1,7 +1,13 @@
 from django.urls import path
 
 from .views import (
-    ConfirmEmailView, LoginView, ProductDetailView, ProductListView, RegisterView,
+    ConfirmEmailView,
+    LoginView,
+    ProductDetailView,
+    ProductListView,
+    RegisterView,
+    BasketItemView,
+    BasketView,
 )
 
 urlpatterns = [
@@ -10,4 +16,6 @@ urlpatterns = [
     path('user/login', LoginView.as_view()),
     path('products', ProductListView.as_view()),
     path('products/<int:pk>', ProductDetailView.as_view()),
+    path('basket', BasketView.as_view()),
+    path('basket/<int:item_id>', BasketItemView.as_view()),
 ]

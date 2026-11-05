@@ -1,18 +1,26 @@
 from django.contrib.auth import authenticate
+from django.db import transaction
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.generics import ListAPIView, RetrieveAPIView
+from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 
-from .models import ConfirmEmailToken, User
-from .serializers import ConfirmEmailSerializer, LoginSerializer, RegisterSerializer
+from .serializers import (
+    ConfirmEmailSerializer,
+    LoginSerializer,
+    RegisterSerializer,
+    ProductInfoSerializer,
+    BasketItemInputSerializer,
+    BasketSerializer,
+)
 from .services.emails import send_confirmation_email
 from .filters import ProductInfoFilter
-from .models import ConfirmEmailToken, ProductInfo, User
-from .serializers import ProductInfoSerializer
+from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo
 
 class RegisterView(APIView):
     """POST /api/v1/user/register: регистрация нового пользователя."""
@@ -98,3 +106,84 @@ class ProductDetailView(RetrieveAPIView):
     """GET /api/v1/products/<id>: полная информация об одном товаре."""
     queryset = catalog_queryset()
     serializer_class = ProductInfoSerializer
+
+
+class BasketView(APIView):
+    """Корзина текущего пользователя."""
+    permission_classes = [IsAuthenticated]  # без токена будет 401
+
+    def _basket(self, user):
+        # Корзина одна на пользователя: берём существующую или создаём
+        basket, _ = Order.objects.get_or_create(user=user, state='basket')
+        return basket
+
+    def _response(self, basket, status_code=status.HTTP_200_OK):
+        # Перечитываем корзину с позициями, чтобы ответ отражал свежие данные
+        basket = (Order.objects
+                  .prefetch_related('items__product_info__shop')
+                  .get(pk=basket.pk))
+        return Response(BasketSerializer(basket).data, status=status_code)
+
+    @staticmethod
+    def _check_stock(info, quantity):
+        # Нельзя положить больше, чем есть на складе поставщика
+        if quantity > info.quantity:
+            raise ValidationError(
+                {'detail': f'Товара «{info.product.name}» в наличии только {info.quantity}.'}
+            )
+
+    def get(self, request):
+        return self._response(self._basket(request.user))
+
+    def post(self, request):
+        """Тело запроса: список [{"product_info": 1, "quantity": 2}, ...]."""
+        serializer = BasketItemInputSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+        basket = self._basket(request.user)
+
+        # atomic: если на одной из позиций случится ошибка, не добавится ни одна
+        with transaction.atomic():
+            for data in serializer.validated_data:
+                info = data['product_info']
+                item, _ = OrderItem.objects.get_or_create(
+                    order=basket, product_info=info,
+                    defaults={'quantity': 0, 'price': info.price,
+                              'name': info.product.name},
+                )
+                item.quantity += data['quantity']
+                self._check_stock(info, item.quantity)
+                item.save()
+        return self._response(basket, status.HTTP_201_CREATED)
+
+    def put(self, request):
+        """Меняет количество уже добавленных позиций на указанное."""
+        serializer = BasketItemInputSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+        basket = self._basket(request.user)
+
+        with transaction.atomic():
+            for data in serializer.validated_data:
+                info = data['product_info']
+                item = basket.items.filter(product_info=info).first()
+                if item is None:
+                    raise ValidationError({'detail': f'«{info.product.name}» нет в корзине.'})
+                self._check_stock(info, data['quantity'])
+                item.quantity = data['quantity']
+                item.save()
+        return self._response(basket)
+
+
+class BasketItemView(APIView):
+    """DELETE /api/v1/basket/<id позиции>: удаляет позицию из корзины."""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, item_id):
+        # Фильтр по order__user обязателен: иначе можно было бы удалить
+        # позицию из чужой корзины, угадав её номер
+        deleted, _ = OrderItem.objects.filter(
+            pk=item_id, order__user=request.user, order__state='basket'
+        ).delete()
+        if not deleted:
+            return Response({'detail': 'Позиция не найдена.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)

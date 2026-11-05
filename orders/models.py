@@ -213,6 +213,7 @@ class Order(models.Model):
                 name='one_basket_per_user',
             ),
         ]
+
     @property
     def total_sum(self):
         return sum((i.total for i in self.items.all()), Decimal('0'))

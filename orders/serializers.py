@@ -1,7 +1,7 @@
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .models import ProductInfo, User
+from .models import Order, OrderItem, ProductInfo, User
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -58,3 +58,38 @@ class ProductInfoSerializer(serializers.ModelSerializer):
         # Характеристики в виде словаря {"Цвет": "чёрный", ...}.
         # Данные уже подгружены через prefetch_related во view, запросов в базу тут нет
         return {p.parameter.name: p.value for p in obj.parameters.all()}
+
+
+class BasketItemInputSerializer(serializers.Serializer):
+    """Входные данные: какой товар и сколько штук."""
+    # В корзину можно положить только товар магазина, который принимает заказы.
+    # PrimaryKeyRelatedField сам проверяет, что такой товар существует
+    product_info = serializers.PrimaryKeyRelatedField(
+        queryset=ProductInfo.objects.filter(shop__accepts_orders=True)
+        .select_related('product', 'shop')
+    )
+    quantity = serializers.IntegerField(min_value=1)
+
+
+class BasketItemSerializer(serializers.ModelSerializer):
+    """Позиция корзины в ответе API."""
+    shop = serializers.SerializerMethodField()
+    total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = OrderItem
+        fields = ('id', 'product_info', 'name', 'shop', 'price', 'quantity', 'total')
+
+    def get_shop(self, obj):
+        # product_info может быть пустым, если товар позже удалили
+        return obj.product_info.shop.name if obj.product_info else None
+
+
+class BasketSerializer(serializers.ModelSerializer):
+    """Корзина целиком: позиции и итоговая сумма."""
+    items = BasketItemSerializer(many=True, read_only=True)
+    total_sum = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ('id', 'items', 'total_sum')
