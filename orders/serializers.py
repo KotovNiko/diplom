@@ -1,7 +1,9 @@
+import re
+
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .models import Order, OrderItem, ProductInfo, User
+from .models import Order, OrderItem, ProductInfo, User, Contact
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -93,3 +95,20 @@ class BasketSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ('id', 'items', 'total_sum')
+
+
+class ContactSerializer(serializers.ModelSerializer):
+    """Контакт и адрес доставки. Владельца подставляет view, клиент его не передаёт."""
+
+    class Meta:
+        model = Contact
+        # user в полях нет: иначе клиент мог бы создать контакт от имени другого
+        fields = ('id', 'last_name', 'first_name', 'patronymic', 'email', 'phone',
+                  'city', 'street', 'house', 'building', 'structure', 'apartment')
+
+    def validate_phone(self, value):
+        # Допускаем цифры, пробелы, скобки, дефисы и плюс в начале; цифр от 10 до 15
+        digits = re.sub(r'\D', '', value)
+        if not re.fullmatch(r'\+?[\d\s()\-]+', value) or not 10 <= len(digits) <= 15:
+            raise serializers.ValidationError('Введите корректный номер телефона.')
+        return value

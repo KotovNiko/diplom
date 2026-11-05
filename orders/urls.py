@@ -8,6 +8,8 @@ from .views import (
     RegisterView,
     BasketItemView,
     BasketView,
+    ContactDetailView,
+    ContactListCreateView,
 )
 
 urlpatterns = [
@@ -18,4 +20,6 @@ urlpatterns = [
     path('products/<int:pk>', ProductDetailView.as_view()),
     path('basket', BasketView.as_view()),
     path('basket/<int:item_id>', BasketItemView.as_view()),
+    path('user/contact', ContactListCreateView.as_view()),
+    path('user/contact/<int:pk>', ContactDetailView.as_view()),
 ]

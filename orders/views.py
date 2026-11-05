@@ -1,6 +1,8 @@
 from django.contrib.auth import authenticate
 from django.db import transaction
+from django.db.models import ProtectedError
 from django_filters.rest_framework import DjangoFilterBackend
+
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
@@ -9,7 +11,7 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
-
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from .serializers import (
     ConfirmEmailSerializer,
     LoginSerializer,
@@ -17,10 +19,11 @@ from .serializers import (
     ProductInfoSerializer,
     BasketItemInputSerializer,
     BasketSerializer,
+    ContactSerializer,
 )
 from .services.emails import send_confirmation_email
 from .filters import ProductInfoFilter
-from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo
+from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo, Contact
 
 class RegisterView(APIView):
     """POST /api/v1/user/register: регистрация нового пользователя."""
@@ -187,3 +190,38 @@ class BasketItemView(APIView):
             return Response({'detail': 'Позиция не найдена.'},
                             status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ContactListCreateView(ListCreateAPIView):
+    """GET: мои контакты. POST: добавить контакт."""
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None  # контактов мало, постраничный вывод не нужен
+
+    def get_queryset(self):
+        # Только контакты текущего пользователя
+        return Contact.objects.filter(user=self.request.user).order_by('id')
+
+    def perform_create(self, serializer):
+        # Владелец берётся из токена, а не из тела запроса
+        serializer.save(user=self.request.user)
+
+
+class ContactDetailView(RetrieveUpdateDestroyAPIView):
+    """GET, PUT, PATCH, DELETE одного моего контакта."""
+    serializer_class = ContactSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Чужой контакт в этот набор не попадает, поэтому вернётся 404
+        return Contact.objects.filter(user=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            # Order.contact защищён: нельзя удалить адрес, использованный в заказе
+            return Response(
+                {'detail': 'Контакт используется в заказах и не может быть удалён.'},
+                status=status.HTTP_409_CONFLICT,
+            )
