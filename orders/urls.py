@@ -1,21 +1,23 @@
 from django.urls import path
 
 from .views import (
-    ConfirmEmailView,
-    LoginView,
-    ProductDetailView,
-    ProductListView,
-    RegisterView,
     BasketItemView,
     BasketView,
+    ConfirmEmailView,
     ContactDetailView,
     ContactListCreateView,
-    OrderListCreateView,
+    LoginView,
     OrderDetailView,
+    OrderListCreateView,
     PartnerOrderListView,
     PartnerOrderStateView,
     PartnerStateView,
     PartnerUpdateView,
+    PasswordResetConfirmView,
+    PasswordResetView,
+    ProductDetailView,
+    ProductListView,
+    RegisterView,
 )
 
 urlpatterns = [
@@ -34,4 +36,6 @@ urlpatterns = [
     path('partner/state', PartnerStateView.as_view()),
     path('partner/orders', PartnerOrderListView.as_view()),
     path('partner/orders/<int:pk>', PartnerOrderStateView.as_view()),
+    path('user/password_reset', PasswordResetView.as_view()),
+    path('user/password_reset/confirm', PasswordResetConfirmView.as_view()),
 ]

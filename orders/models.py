@@ -1,5 +1,6 @@
 import uuid
 
+from datetime import timedelta
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from decimal import Decimal
@@ -256,13 +257,29 @@ class OrderItem(models.Model):
 
 
 class ConfirmEmailToken(models.Model):
+    """Одноразовый токен: подтверждение email или сброс пароля."""
+    PURPOSES = (
+        ('confirm', 'Подтверждение email'),
+        ('reset', 'Сброс пароля'),
+    )
+    # Сколько живёт токен каждого типа
+    LIFETIME = {
+        'confirm': timedelta(hours=24),
+        'reset': timedelta(hours=1),
+    }
+
     user = models.ForeignKey(User, verbose_name='Пользователь', on_delete=models.CASCADE)
     key = models.UUIDField('Токен', default=uuid.uuid4, unique=True)
+    purpose = models.CharField('Назначение', max_length=10, choices=PURPOSES, default='confirm')
     created_at = models.DateTimeField('Создан', auto_now_add=True)
 
     class Meta:
         verbose_name = 'Токен подтверждения'
         verbose_name_plural = 'Токены подтверждения'
 
+    def is_expired(self):
+        """Токен просрочен, если с момента создания прошло больше срока жизни."""
+        return timezone.now() - self.created_at > self.LIFETIME[self.purpose]
+
     def __str__(self):
-        return f'{self.user.email} — {self.key}'
+        return f'{self.user.email}: {self.get_purpose_display()}'

@@ -34,11 +34,13 @@ from .serializers import (
     PartnerOrderSerializer,
     PartnerOrderStateSerializer,
     PartnerStateSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetSerializer,
 )
-from .services.emails import send_confirmation_email
+from .services.emails import send_confirmation_email, send_password_reset_email
 from .services.importer import import_shop_data
 from .filters import ProductInfoFilter
-from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo, Contact, Shop
+from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo, Contact, Shop, User
 from .services.orders import OrderError, confirm_order
 from .permissions import IsShop
 
@@ -68,10 +70,10 @@ class ConfirmEmailView(APIView):
 
         # Ищем токен, который принадлежит именно этому email
         token = ConfirmEmailToken.objects.filter(
-            key=data['token'], user__email__iexact=data['email']
+            key=data['token'], user__email__iexact=data['email'], purpose='confirm'
         ).select_related('user').first()
-        if token is None:
-            return Response({'detail': 'Неверный токен или email.'},
+        if token is None or token.is_expired():
+            return Response({'detail': 'Неверный или просроченный токен.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         token.user.is_active = True
@@ -404,3 +406,50 @@ class PartnerOrderStateView(APIView):
         order.state = new_state
         order.save(update_fields=['state'])
         return Response(PartnerOrderSerializer(order, context={'shop': shop}).data)
+
+
+class PasswordResetView(APIView):
+    """POST /api/v1/user/password_reset: запрос на сброс пароля."""
+
+    def post(self, request):
+        serializer = PasswordResetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = User.objects.filter(
+            email__iexact=serializer.validated_data['email'], is_active=True
+        ).first()
+        if user:
+            # Старые токены сброса гасим: действует только последний
+            ConfirmEmailToken.objects.filter(user=user, purpose='reset').delete()
+            token = ConfirmEmailToken.objects.create(user=user, purpose='reset')
+            send_password_reset_email(user, token)
+
+        # Ответ одинаковый независимо от того, есть ли такой email:
+        # иначе по ответам можно было бы вычислить, кто зарегистрирован
+        return Response({'detail': 'Если такой email зарегистрирован, на него отправлено письмо.'})
+
+
+class PasswordResetConfirmView(APIView):
+    """POST /api/v1/user/password_reset/confirm: установка нового пароля."""
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        token = ConfirmEmailToken.objects.filter(
+            key=data['token'], user__email__iexact=data['email'], purpose='reset'
+        ).select_related('user').first()
+        if token is None or token.is_expired():
+            if token:
+                token.delete()  # просроченный токен убираем
+            return Response({'detail': 'Неверный или просроченный токен.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            user = token.user
+            user.set_password(data['password'])
+            user.save(update_fields=['password'])
+            token.delete()                        # токен одноразовый
+            Token.objects.filter(user=user).delete()  # старые сессии API перестают работать
+        return Response({'detail': 'Пароль изменён. Войдите с новым паролем.'})

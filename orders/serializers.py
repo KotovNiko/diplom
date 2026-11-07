@@ -175,3 +175,18 @@ class PartnerOrderSerializer(serializers.ModelSerializer):
 
     def get_total_sum(self, obj):
         return sum((i.total for i in self._shop_items(obj)), Decimal('0'))
+
+
+class PasswordResetSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    token = serializers.UUIDField()
+    password = serializers.CharField(write_only=True)
+
+    def validate_password(self, value):
+        # Те же правила сложности, что и при регистрации
+        validate_password(value)
+        return value

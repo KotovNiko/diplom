@@ -77,3 +77,16 @@ def send_order_emails(order_id):
         + f'\n\nИтого: {order.total_sum} руб.\n'
     )
     _send(f'Накладная по заказу №{order.pk}', admin_body, [settings.ADMIN_EMAIL])
+
+
+def send_password_reset_email(user, token):
+    """Письмо со ссылкой-токеном для сброса пароля."""
+    _send(
+        'Сброс пароля',
+        f'Здравствуйте, {user.first_name or user.email}!\n\n'
+        f'Токен для сброса пароля: {token.key}\n'
+        'Он действует 1 час. Отправьте его на /api/v1/user/password_reset/confirm '
+        'вместе с email и новым паролем.\n\n'
+        'Если вы не запрашивали сброс, просто проигнорируйте это письмо.',
+        [user.email],
+    )
