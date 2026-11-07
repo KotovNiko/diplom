@@ -10,6 +10,8 @@ from .views import (
     BasketView,
     ContactDetailView,
     ContactListCreateView,
+    OrderListCreateView,
+    OrderDetailView,
 )
 
 urlpatterns = [
@@ -22,4 +24,6 @@ urlpatterns = [
     path('basket/<int:item_id>', BasketItemView.as_view()),
     path('user/contact', ContactListCreateView.as_view()),
     path('user/contact/<int:pk>', ContactDetailView.as_view()),
+    path('order', OrderListCreateView.as_view()),
+    path('order/<int:pk>', OrderDetailView.as_view()),
 ]

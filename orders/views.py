@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate
 from django.db import transaction
 from django.db.models import ProtectedError
+from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework import status
@@ -20,10 +21,13 @@ from .serializers import (
     BasketItemInputSerializer,
     BasketSerializer,
     ContactSerializer,
+    OrderDetailSerializer, OrderConfirmSerializer, OrderListSerializer,
 )
 from .services.emails import send_confirmation_email
 from .filters import ProductInfoFilter
 from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo, Contact
+from .services.orders import OrderError, confirm_order
+
 
 class RegisterView(APIView):
     """POST /api/v1/user/register: регистрация нового пользователя."""
@@ -225,3 +229,46 @@ class ContactDetailView(RetrieveUpdateDestroyAPIView):
                 {'detail': 'Контакт используется в заказах и не может быть удалён.'},
                 status=status.HTTP_409_CONFLICT,
             )
+
+
+def user_orders(user):
+    """Оформленные заказы пользователя (корзина в историю не входит)."""
+    return (Order.objects
+            .filter(user=user)
+            .exclude(state='basket')
+            .select_related('contact')
+            .prefetch_related('items__product_info__shop'))
+
+
+class OrderListCreateView(APIView):
+    """GET: история заказов. POST: подтверждение заказа."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        orders = user_orders(request.user)
+        return Response(OrderListSerializer(orders, many=True).data)
+
+    def post(self, request):
+        serializer = OrderConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Корзина и контакт должны принадлежать этому пользователю, иначе 404
+        basket = get_object_or_404(Order, pk=data['id'], user=request.user)
+        contact = get_object_or_404(Contact, pk=data['contact'], user=request.user)
+        try:
+            confirm_order(basket, contact)
+        except OrderError as error:
+            return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        order = user_orders(request.user).get(pk=basket.pk)
+        return Response(OrderDetailSerializer(order).data, status=status.HTTP_201_CREATED)
+
+
+class OrderDetailView(RetrieveAPIView):
+    """GET /api/v1/order/<id>: детали заказа."""
+    serializer_class = OrderDetailSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return user_orders(self.request.user)

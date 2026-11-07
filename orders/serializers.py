@@ -112,3 +112,32 @@ class ContactSerializer(serializers.ModelSerializer):
         if not re.fullmatch(r'\+?[\d\s()\-]+', value) or not 10 <= len(digits) <= 15:
             raise serializers.ValidationError('Введите корректный номер телефона.')
         return value
+
+
+class OrderConfirmSerializer(serializers.Serializer):
+    """Входные данные подтверждения: номер корзины и номер контакта."""
+    id = serializers.IntegerField()
+    contact = serializers.IntegerField()
+
+
+class OrderListSerializer(serializers.ModelSerializer):
+    """Строка в истории заказов: номер, дата, сумма, статус."""
+    state_display = serializers.CharField(source='get_state_display', read_only=True)
+    total_sum = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ('id', 'created_at', 'state', 'state_display', 'total_sum')
+
+
+class OrderDetailSerializer(serializers.ModelSerializer):
+    """Заказ целиком: позиции, адрес, сумма."""
+    state_display = serializers.CharField(source='get_state_display', read_only=True)
+    items = BasketItemSerializer(many=True, read_only=True)
+    contact = ContactSerializer(read_only=True)
+    total_sum = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ('id', 'created_at', 'state', 'state_display', 'contact',
+                  'items', 'total_sum')
