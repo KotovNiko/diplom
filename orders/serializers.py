@@ -2,6 +2,7 @@ import re
 
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
+from decimal import Decimal
 
 from .models import Order, OrderItem, ProductInfo, User, Contact
 
@@ -141,3 +142,36 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         model = Order
         fields = ('id', 'created_at', 'state', 'state_display', 'contact',
                   'items', 'total_sum')
+
+
+class PartnerStateSerializer(serializers.Serializer):
+    accepts_orders = serializers.BooleanField()
+
+
+class PartnerOrderStateSerializer(serializers.Serializer):
+    state = serializers.ChoiceField(choices=Order.STATES)
+
+
+class PartnerOrderSerializer(serializers.ModelSerializer):
+    """Заказ глазами поставщика: только его позиции и его часть суммы."""
+    state_display = serializers.CharField(source='get_state_display', read_only=True)
+    contact = ContactSerializer(read_only=True)
+    items = serializers.SerializerMethodField()
+    total_sum = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = ('id', 'created_at', 'state', 'state_display', 'contact',
+                  'items', 'total_sum')
+
+    def _shop_items(self, obj):
+        # Магазин передаёт view через context; позиции других поставщиков отбрасываем
+        shop = self.context['shop']
+        return [i for i in obj.items.all()
+                if i.product_info and i.product_info.shop_id == shop.id]
+
+    def get_items(self, obj):
+        return BasketItemSerializer(self._shop_items(obj), many=True).data
+
+    def get_total_sum(self, obj):
+        return sum((i.total for i in self._shop_items(obj)), Decimal('0'))

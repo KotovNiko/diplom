@@ -1,8 +1,14 @@
+import requests
+import yaml
+
 from django.contrib.auth import authenticate
 from django.db import transaction
 from django.db.models import ProtectedError
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
+from django.core.exceptions import ObjectDoesNotExist
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -13,6 +19,7 @@ from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+from rest_framework.parsers import JSONParser, MultiPartParser
 from .serializers import (
     ConfirmEmailSerializer,
     LoginSerializer,
@@ -21,13 +28,19 @@ from .serializers import (
     BasketItemInputSerializer,
     BasketSerializer,
     ContactSerializer,
-    OrderDetailSerializer, OrderConfirmSerializer, OrderListSerializer,
+    OrderDetailSerializer,
+    OrderConfirmSerializer,
+    OrderListSerializer,
+    PartnerOrderSerializer,
+    PartnerOrderStateSerializer,
+    PartnerStateSerializer,
 )
 from .services.emails import send_confirmation_email
+from .services.importer import import_shop_data
 from .filters import ProductInfoFilter
-from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo, Contact
+from .models import ConfirmEmailToken, Order, OrderItem, ProductInfo, Contact, Shop
 from .services.orders import OrderError, confirm_order
-
+from .permissions import IsShop
 
 class RegisterView(APIView):
     """POST /api/v1/user/register: регистрация нового пользователя."""
@@ -272,3 +285,122 @@ class OrderDetailView(RetrieveAPIView):
 
     def get_queryset(self):
         return user_orders(self.request.user)
+
+
+class PartnerUpdateView(APIView):
+    """POST /api/v1/partner/update: загрузка прайса файлом или по ссылке."""
+    permission_classes = [IsAuthenticated, IsShop]
+    parser_classes = [MultiPartParser, JSONParser]  # файл (form-data) или JSON со ссылкой
+    MAX_SIZE = 1024 * 1024  # 1 МБ достаточно для прайса
+
+    def _read_data(self, request):
+        """Возвращает словарь из YAML. Ошибки превращаем в ValidationError (400)."""
+        upload = request.FILES.get('file')
+        url = request.data.get('url')
+        try:
+            if upload:
+                if upload.size > self.MAX_SIZE:
+                    raise ValidationError({'detail': 'Файл слишком большой.'})
+                return yaml.safe_load(upload.read().decode('utf-8'))
+            if url:
+                URLValidator(schemes=['http', 'https'])(url)  # только http(s)
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                if len(response.content) > self.MAX_SIZE:
+                    raise ValidationError({'detail': 'Файл слишком большой.'})
+                return yaml.safe_load(response.content.decode('utf-8'))
+        except (yaml.YAMLError, UnicodeDecodeError):
+            raise ValidationError({'detail': 'Не удалось прочитать YAML.'})
+        except (DjangoValidationError, requests.RequestException):
+            raise ValidationError({'detail': 'Не удалось загрузить файл по ссылке.'})
+        raise ValidationError({'detail': 'Передайте файл (file) или ссылку (url).'})
+
+    def post(self, request):
+        data = self._read_data(request)
+        if not isinstance(data, dict) or not {'shop', 'categories', 'goods'} <= data.keys():
+            raise ValidationError({'detail': 'В файле должны быть shop, categories и goods.'})
+
+        # Один поставщик, один магазин; чужой магазин перезаписывать нельзя
+        existing = Shop.objects.filter(name=data['shop']).first()
+        if existing and existing.user_id not in (None, request.user.id):
+            return Response({'detail': 'Магазин с таким названием принадлежит другому поставщику.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        owned = Shop.objects.filter(user=request.user).first()
+        if owned and owned.name != data['shop']:
+            raise ValidationError({'detail': f'Ваш магазин называется «{owned.name}».'})
+
+        try:
+            shop, count = import_shop_data(data, user=request.user)
+        except (KeyError, TypeError, ObjectDoesNotExist):
+            # Некорректная структура файла; транзакция в import_shop_data откатилась
+            raise ValidationError({'detail': 'Файл содержит ошибки в структуре или данных.'})
+        return Response({'shop': shop.name, 'loaded': count})
+
+
+class PartnerStateView(APIView):
+    """GET: принимает ли магазин заказы. POST: включить или отключить приём."""
+    permission_classes = [IsAuthenticated, IsShop]
+
+    def _shop(self, request):
+        return get_object_or_404(Shop, user=request.user)  # магазин появляется после загрузки прайса
+
+    def get(self, request):
+        return Response({'accepts_orders': self._shop(request).accepts_orders})
+
+    def post(self, request):
+        serializer = PartnerStateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        shop = self._shop(request)
+        shop.accepts_orders = serializer.validated_data['accepts_orders']
+        shop.save(update_fields=['accepts_orders'])
+        return Response({'accepts_orders': shop.accepts_orders})
+
+
+def shop_orders(shop):
+    """Оформленные заказы, в которых есть позиции этого магазина."""
+    return (Order.objects
+            .filter(items__product_info__shop=shop)
+            .exclude(state='basket')
+            .distinct()  # заказ с несколькими позициями магазина не должен повторяться
+            .select_related('contact')
+            .prefetch_related('items__product_info__shop'))
+
+
+class PartnerOrderListView(APIView):
+    """GET /api/v1/partner/orders"""
+    permission_classes = [IsAuthenticated, IsShop]
+
+    def get(self, request):
+        shop = get_object_or_404(Shop, user=request.user)
+        orders = shop_orders(shop)
+        return Response(PartnerOrderSerializer(orders, many=True, context={'shop': shop}).data)
+
+
+class PartnerOrderStateView(APIView):
+    """PATCH /api/v1/partner/orders/<id>: смена статуса заказа поставщиком."""
+    permission_classes = [IsAuthenticated, IsShop]
+
+    # Какие переходы разрешены: из какого статуса в какой
+    TRANSITIONS = {
+        'new': {'confirmed'},
+        'confirmed': {'assembled'},
+        'assembled': {'sent'},
+        'sent': {'delivered'},
+    }
+
+    def patch(self, request, pk):
+        shop = get_object_or_404(Shop, user=request.user)
+        order = get_object_or_404(shop_orders(shop), pk=pk)
+
+        serializer = PartnerOrderStateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_state = serializer.validated_data['state']
+
+        if new_state not in self.TRANSITIONS.get(order.state, set()):
+            raise ValidationError(
+                {'detail': f'Нельзя перевести заказ из «{order.get_state_display()}» '
+                           f'в «{dict(Order.STATES)[new_state]}».'}
+            )
+        order.state = new_state
+        order.save(update_fields=['state'])
+        return Response(PartnerOrderSerializer(order, context={'shop': shop}).data)
