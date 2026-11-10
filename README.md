@@ -32,6 +32,7 @@ python manage.py migrate
 python manage.py createsuperuser
 python manage.py import_products data/shop1.yaml
 python manage.py runserver
+python manage.py test
 ```
 
 Сервер: http://127.0.0.1:8000/, админка: http://127.0.0.1:8000/admin/
